@@ -41,7 +41,8 @@ app.include_router(feed_router, prefix="/api/v1")
 async def health_check():
     return {"status": "ok", "version": settings.app_version}
 
-
+from app.core.config import get_settings
+settings = get_settings()
 @app.get("/api/v1/hello")
 async def hello():
-    return {"db_url": os.getenv("RESEND_API_KEY")}
+    return {"db_url": settings.openai_api_key}
