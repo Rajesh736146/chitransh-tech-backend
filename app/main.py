@@ -45,4 +45,9 @@ import os
 settings = get_settings()
 @app.get("/api/v1/hello")
 async def hello():
-    return {"db_url": os.getenv("RESEND_API_KEY")}
+    return {"resend_api": os.getenv("RESEND_API_KEY"),
+            "resend_email": os.getenv("RESEND_FROM_EMAIL"),
+            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+            "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL"),
+        
+    }
