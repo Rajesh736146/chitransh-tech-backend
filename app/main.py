@@ -40,3 +40,8 @@ app.include_router(feed_router, prefix="/api/v1")
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "version": settings.app_version}
+
+
+@app.get("/api/v1/hello")
+async def hello():
+    return {"db_url": os.getenv("RESEND_API_KEY")}
