@@ -83,3 +83,31 @@ class Company(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class JobApplication(Base):
+    __tablename__ = "job_applications"
+    __table_args__ = {"schema": "public"}
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("uuid_generate_v4()"),
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("public.jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    applicant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("public.users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    resume_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("public.resumes.id"), nullable=True
+    )
+    application_status: Mapped[str] = mapped_column(
+        String(100), server_default="APPLIED"
+    )
+    ai_match_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

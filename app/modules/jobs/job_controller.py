@@ -1,7 +1,7 @@
 """Job routes — post, list, update, delete jobs (employer-only write ops)."""
 
 import uuid
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, File, UploadFile, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_current_user
@@ -12,11 +12,22 @@ from app.modules.jobs.job_schema import (
     JobUpdateRequest,
     JobResponse,
     JobListResponse,
+    FeaturedJobListResponse,
+    JobApplicationResponse,
+    JobApplicationListResponse,
     CompanyCreateRequest,
     CompanyResponse,
 )
+from app.services.r2_storage_service import R2StorageService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+ALLOWED_RESUME_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+MAX_RESUME_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def get_job_service(db: AsyncSession = Depends(get_db)) -> JobService:
@@ -51,6 +62,23 @@ async def list_companies(
 
 
 # ─── Jobs ─────────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/featured",
+    response_model=FeaturedJobListResponse,
+    summary="Get featured/trending jobs (public)",
+)
+async def get_featured_jobs(
+    limit: int = Query(10, ge=1, le=50, description="Number of featured jobs to return"),
+    service: JobService = Depends(get_job_service),
+):
+    """
+    Returns top featured jobs ranked by popularity score.
+    Score is based on view count, application count, and recency.
+    No authentication required.
+    """
+    return await service.get_featured_jobs(limit=limit)
+
 
 @router.post(
     "/",
@@ -104,6 +132,82 @@ async def get_my_jobs(
     service: JobService = Depends(get_job_service),
 ):
     return await service.get_my_jobs(current_user, page=page, page_size=page_size)
+
+
+@router.get(
+    "/my-applications",
+    response_model=JobApplicationListResponse,
+    summary="Get current user's job applications",
+)
+async def get_my_applications(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    service: JobService = Depends(get_job_service),
+):
+    return await service.get_my_applications(current_user, page=page, page_size=page_size)
+
+
+@router.post(
+    "/{job_id}/apply",
+    response_model=JobApplicationResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Apply to a job with resume upload",
+)
+async def apply_to_job(
+    job_id: uuid.UUID,
+    resume: UploadFile = File(..., description="Resume file (PDF, DOC, DOCX)"),
+    current_user: User = Depends(get_current_user),
+    service: JobService = Depends(get_job_service),
+):
+    """
+    Apply to a job by uploading your resume.
+    Accepts PDF, DOC, or DOCX files up to 10 MB.
+    """
+    if resume.content_type not in ALLOWED_RESUME_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid resume format. Allowed: PDF, DOC, DOCX",
+        )
+
+    content = await resume.read()
+    if len(content) > MAX_RESUME_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Resume file must be under 10 MB",
+        )
+    await resume.seek(0)
+
+    # Upload resume to R2
+    r2 = R2StorageService()
+    key = r2.upload_file(
+        file=resume.file,
+        filename=resume.filename or "resume.pdf",
+        folder="resumes",
+        content_type=resume.content_type,
+    )
+    resume_url = r2.generate_presigned_url(key, expires_in=90 * 24 * 3600)  # 90-day URL
+
+    return await service.apply_to_job(
+        job_id=job_id,
+        current_user=current_user,
+        resume_url=resume_url,
+    )
+
+
+@router.get(
+    "/{job_id}/applicants",
+    response_model=JobApplicationListResponse,
+    summary="Get applicants for a job (employer only)",
+)
+async def get_job_applicants(
+    job_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    service: JobService = Depends(get_job_service),
+):
+    return await service.get_job_applicants(job_id, current_user, page=page, page_size=page_size)
 
 
 @router.get(

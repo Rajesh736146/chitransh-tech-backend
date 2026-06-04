@@ -107,6 +107,35 @@ class JobListResponse(BaseModel):
     items: list[JobResponse]
 
 
+class FeaturedJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    company_id: uuid.UUID
+    title: str
+    description: str
+    employment_type: str | None
+    experience_required: str | None
+    salary_min: Decimal | None
+    salary_max: Decimal | None
+    location: str | None
+    remote_type: str | None
+    status: str
+    posted_by: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    skills: list[SkillOut] = []
+    company_name: str | None = None
+    company_logo: str | None = None
+    view_count: int = 0
+    application_count: int = 0
+
+
+class FeaturedJobListResponse(BaseModel):
+    total: int
+    items: list[FeaturedJobResponse]
+
+
 # ─── Company schemas ──────────────────────────────────────────────────────────
 
 class CompanyCreateRequest(BaseModel):
@@ -131,3 +160,27 @@ class CompanyResponse(BaseModel):
     industry: str | None
     headquarters: str | None
     created_at: datetime
+
+
+# ─── Job Application schemas ─────────────────────────────────────────────────
+
+class JobApplicationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    job_id: uuid.UUID
+    applicant_id: uuid.UUID
+    resume_id: uuid.UUID | None
+    resume_url: str | None = None
+    application_status: str
+    ai_match_score: Decimal | None = None
+    applied_at: datetime
+    job_title: str | None = None
+    company_name: str | None = None
+
+
+class JobApplicationListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[JobApplicationResponse]
