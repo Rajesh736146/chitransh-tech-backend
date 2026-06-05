@@ -14,6 +14,8 @@ from app.modules.auth.auth_schema import (
     VerifyEmailRequest,
     ForgotPasswordRequest,
     AskResetOtpRequest,
+    VerifyOtpRequest,
+    VerifyOtpResponse,
     VerifyResetOtpRequest,
     ResetPasswordRequest,
     MessageResponse,
@@ -69,6 +71,14 @@ async def ask_reset_otp(
     return await service.forgot_password(payload.email)
 
 
+@router.post("/verify-otp", response_model=VerifyOtpResponse)
+async def verify_otp(
+    payload: VerifyOtpRequest,
+    service: AuthService = Depends(get_auth_service),
+):
+    return await service.verify_otp(payload.email, payload.otp)
+
+
 @router.post("/verify-reset-otp", response_model=MessageResponse)
 async def verify_reset_otp(
     payload: VerifyResetOtpRequest,
@@ -82,4 +92,4 @@ async def reset_password(
     payload: ResetPasswordRequest,
     service: AuthService = Depends(get_auth_service),
 ):
-    return await service.reset_password(payload.email, payload.otp, payload.password)
+    return await service.reset_password(payload.email, payload.otp, payload.reset_token, payload.password)

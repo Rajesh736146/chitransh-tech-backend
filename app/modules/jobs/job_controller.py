@@ -156,7 +156,7 @@ async def get_my_applications(
 )
 async def apply_to_job(
     job_id: uuid.UUID,
-    resume: UploadFile = File(..., description="Resume file (PDF, DOC, DOCX)"),
+    resume: UploadFile = File(None, description="Resume file (PDF, DOC, DOCX) — optional if resume_url provided"),
     current_user: User = Depends(get_current_user),
     service: JobService = Depends(get_job_service),
 ):
@@ -164,34 +164,63 @@ async def apply_to_job(
     Apply to a job by uploading your resume.
     Accepts PDF, DOC, or DOCX files up to 10 MB.
     """
-    if resume.content_type not in ALLOWED_RESUME_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid resume format. Allowed: PDF, DOC, DOCX",
-        )
+    resume_url = None
 
-    content = await resume.read()
-    if len(content) > MAX_RESUME_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Resume file must be under 10 MB",
-        )
-    await resume.seek(0)
+    if resume and resume.filename:
+        if resume.content_type not in ALLOWED_RESUME_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid resume format. Allowed: PDF, DOC, DOCX",
+            )
 
-    # Upload resume to R2
-    r2 = R2StorageService()
-    key = r2.upload_file(
-        file=resume.file,
-        filename=resume.filename or "resume.pdf",
-        folder="resumes",
-        content_type=resume.content_type,
-    )
-    resume_url = r2.generate_presigned_url(key, expires_in=90 * 24 * 3600)  # 90-day URL
+        content = await resume.read()
+        if len(content) > MAX_RESUME_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Resume file must be under 10 MB",
+            )
+        await resume.seek(0)
+
+        # Upload resume to R2
+        r2 = R2StorageService()
+        key = r2.upload_file(
+            file=resume.file,
+            filename=resume.filename or "resume.pdf",
+            folder="resumes",
+            content_type=resume.content_type,
+        )
+        resume_url = r2.generate_presigned_url(key, expires_in=90 * 24 * 3600)
 
     return await service.apply_to_job(
         job_id=job_id,
         current_user=current_user,
-        resume_url=resume_url,
+        resume_url=resume_url or "pending",
+    )
+
+
+from pydantic import BaseModel as _BaseModel
+
+class _ApplyWithUrlBody(_BaseModel):
+    resume_url: str
+
+
+@router.post(
+    "/{job_id}/apply-with-url",
+    response_model=JobApplicationResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Apply to a job with a pre-uploaded resume URL",
+)
+async def apply_to_job_with_url(
+    job_id: uuid.UUID,
+    body: _ApplyWithUrlBody,
+    current_user: User = Depends(get_current_user),
+    service: JobService = Depends(get_job_service),
+):
+    """Apply to a job using a resume URL obtained from /upload/document."""
+    return await service.apply_to_job(
+        job_id=job_id,
+        current_user=current_user,
+        resume_url=body.resume_url,
     )
 
 

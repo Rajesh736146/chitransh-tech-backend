@@ -48,14 +48,24 @@ class AskResetOtpRequest(BaseModel):
     email: EmailStr
 
 
+class VerifyOtpRequest(BaseModel):
+    email: EmailStr
+    otp: str
+
+
+class VerifyOtpResponse(BaseModel):
+    reset_token: str
+
+
 class VerifyResetOtpRequest(BaseModel):
     email: EmailStr
     otp: str
 
 
 class ResetPasswordRequest(BaseModel):
-    email: EmailStr
-    otp: str
+    email: EmailStr | None = None
+    otp: str | None = None
+    reset_token: str | None = None
     password: str
 
 

@@ -17,6 +17,7 @@ from app.modules.auth.auth_schema import (
     LoginRequest,
     TokenResponse,
     UserResponse,
+    VerifyOtpResponse,
     MessageResponse,
 )
 from app.services.email_service import send_verification_email, send_password_reset_email
@@ -135,6 +136,31 @@ class AuthService:
             message="If the email is registered, a password reset code has been sent"
         )
 
+    async def verify_otp(self, email: str, otp: str) -> VerifyOtpResponse:
+        result = await self.db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if not user or user.password_reset_otp != otp:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired password reset code",
+            )
+
+        if (
+            user.password_reset_expires_at
+            and user.password_reset_expires_at
+            < datetime.now(timezone.utc).replace(tzinfo=None)
+        ):
+            user.password_reset_otp = None
+            user.password_reset_expires_at = None
+            await self.db.flush()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired password reset code",
+            )
+
+        # For the current frontend flow, return the OTP as the reset token.
+        return VerifyOtpResponse(reset_token=otp)
+
     async def verify_password_reset_otp(self, email: str, otp: str) -> MessageResponse:
         result = await self.db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
@@ -159,10 +185,25 @@ class AuthService:
 
         return MessageResponse(message="Password reset code is valid")
 
-    async def reset_password(self, email: str, otp: str, new_password: str) -> MessageResponse:
-        result = await self.db.execute(select(User).where(User.email == email))
-        user = result.scalar_one_or_none()
-        if not user or user.password_reset_otp != otp:
+    async def reset_password(
+        self,
+        email: str | None,
+        otp: str | None,
+        reset_token: str | None,
+        new_password: str,
+    ) -> MessageResponse:
+        user = None
+
+        if reset_token:
+            result = await self.db.execute(select(User).where(User.password_reset_otp == reset_token))
+            user = result.scalar_one_or_none()
+        elif email and otp:
+            result = await self.db.execute(select(User).where(User.email == email))
+            user = result.scalar_one_or_none()
+            if user and user.password_reset_otp != otp:
+                user = None
+
+        if not user or not user.password_reset_otp:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired password reset code",
