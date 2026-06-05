@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import get_settings
 from app.modules.auth.auth_controller import router as auth_router
@@ -21,13 +23,23 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    debug=settings.debug,
+    debug=False,
     lifespan=lifespan,
 )
 
+
+# Catch-all exception handler to ensure CORS headers are present even on 500s
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
