@@ -151,3 +151,145 @@ async def get_conversation(
     service: ForumService = Depends(get_forum_service),
 ):
     return await service.get_conversation(user_id, current_user, page=page, page_size=page_size)
+
+
+
+# ─── Forum Posts (Hiring / Seeking) ───────────────────────────────────────────
+
+from pydantic import BaseModel as _BM, Field as _F
+
+class ForumPostCreate(_BM):
+    post_type: str = _F(..., description="HIRING or SEEKING")
+    title: str = _F(..., min_length=5)
+    content: str = _F(..., min_length=10)
+    location: str | None = None
+    skills_required: str | None = None
+    experience_required: str | None = None
+    salary_range: str | None = None
+
+class ForumPostOut(_BM):
+    id: str
+    author_id: str
+    author_name: str | None = None
+    post_type: str
+    title: str
+    content: str
+    location: str | None = None
+    skills_required: str | None = None
+    experience_required: str | None = None
+    salary_range: str | None = None
+    status: str
+    created_at: str
+    comment_count: int = 0
+
+class ForumCommentCreate(_BM):
+    content: str = _F(..., min_length=1)
+
+class ForumCommentOut(_BM):
+    id: str
+    user_id: str
+    author_name: str | None = None
+    content: str
+    created_at: str
+
+
+@router.post(
+    "/posts",
+    response_model=ForumPostOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a forum post (HIRING or SEEKING)",
+)
+async def create_forum_post(
+    payload: ForumPostCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    sql = text("""
+        INSERT INTO public.forum_posts (author_id, post_type, title, content, location, skills_required, experience_required, salary_range)
+        VALUES (:author_id, :post_type, :title, :content, :location, :skills_required, :experience_required, :salary_range)
+        RETURNING id, author_id, post_type, title, content, location, skills_required, experience_required, salary_range, status, created_at
+    """)
+    row = (await db.execute(sql, {
+        "author_id": str(current_user.id), "post_type": payload.post_type,
+        "title": payload.title, "content": payload.content,
+        "location": payload.location, "skills_required": payload.skills_required,
+        "experience_required": payload.experience_required, "salary_range": payload.salary_range,
+    })).mappings().first()
+    await db.flush()
+    return ForumPostOut(**{k: str(v) if k in ("id", "author_id", "created_at") else v for k, v in row.items()}, author_name=current_user.full_name, comment_count=0)
+
+
+@router.get(
+    "/posts",
+    summary="List forum posts (filterable by type)",
+)
+async def list_forum_posts(
+    post_type: str | None = Query(None, description="HIRING or SEEKING"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    type_filter = "AND fp.post_type = :post_type" if post_type else ""
+    params: dict = {"limit": page_size, "offset": (page - 1) * page_size}
+    if post_type:
+        params["post_type"] = post_type
+
+    count_sql = text(f"SELECT COUNT(*) FROM public.forum_posts fp WHERE 1=1 {type_filter}")
+    total = (await db.execute(count_sql, params)).scalar() or 0
+
+    sql = text(f"""
+        SELECT fp.*, u.full_name AS author_name,
+            (SELECT COUNT(*) FROM public.forum_comments fc WHERE fc.post_id = fp.id) AS comment_count
+        FROM public.forum_posts fp
+        JOIN public.users u ON u.id = fp.author_id
+        WHERE 1=1 {type_filter}
+        ORDER BY fp.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    rows = (await db.execute(sql, params)).mappings().all()
+    items = [ForumPostOut(**{k: str(v) if k in ("id", "author_id", "created_at") else v for k, v in r.items()}) for r in rows]
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.get(
+    "/posts/{post_id}/comments",
+    summary="Get comments on a forum post",
+)
+async def get_forum_comments(
+    post_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    sql = text("""
+        SELECT fc.id, fc.user_id, fc.content, fc.created_at, u.full_name AS author_name
+        FROM public.forum_comments fc
+        JOIN public.users u ON u.id = fc.user_id
+        WHERE fc.post_id = :post_id
+        ORDER BY fc.created_at ASC
+    """)
+    rows = (await db.execute(sql, {"post_id": str(post_id)})).mappings().all()
+    return [ForumCommentOut(**{k: str(v) if k in ("id", "user_id", "created_at") else v for k, v in r.items()}) for r in rows]
+
+
+@router.post(
+    "/posts/{post_id}/comments",
+    status_code=status.HTTP_201_CREATED,
+    summary="Comment on a forum post",
+)
+async def add_forum_comment(
+    post_id: uuid.UUID,
+    payload: ForumCommentCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    sql = text("""
+        INSERT INTO public.forum_comments (post_id, user_id, content)
+        VALUES (:post_id, :user_id, :content)
+        RETURNING id, user_id, content, created_at
+    """)
+    row = (await db.execute(sql, {"post_id": str(post_id), "user_id": str(current_user.id), "content": payload.content})).mappings().first()
+    await db.flush()
+    return ForumCommentOut(**{k: str(v) if k in ("id", "user_id", "created_at") else v for k, v in row.items()}, author_name=current_user.full_name)
