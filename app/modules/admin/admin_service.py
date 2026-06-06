@@ -22,7 +22,7 @@ from app.modules.admin.admin_schema import (
     MessageResponse,
 )
 
-ADMIN_ROLE_ID = 3
+ADMIN_ROLE_ID = 4
 
 
 def _require_admin(user) -> None:
