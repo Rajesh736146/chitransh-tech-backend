@@ -10,6 +10,7 @@ class CreatePostRequest(BaseModel):
     title: str | None = None
     media_url: str | None = None
     external_link: str | None = None
+    category: str | None = Field(None, description="blue_collar or white_collar")
     visibility: str = "PUBLIC"
 
 
@@ -49,6 +50,7 @@ class FeedPostOut(BaseModel):
     content: str | None
     media_url: str | None
     external_link: str | None
+    category: str | None = None
     visibility: str
     created_at: datetime
 

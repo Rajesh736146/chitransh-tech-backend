@@ -104,6 +104,7 @@ class JobService:
             salary_min=float(job.salary_min) if job.salary_min else None,
             salary_max=float(job.salary_max) if job.salary_max else None,
             posted_by=current_user.id,
+            job_category=job.job_category,
         )
 
         return JobResponse.model_validate(job)
@@ -125,6 +126,7 @@ class JobService:
         employment_type: str | None = None,
         remote_type: str | None = None,
         company_name: str | None = None,
+        category: str | None = None,
         status: str = "OPEN",
     ) -> JobListResponse:
         # ── build WHERE clauses and params dict ──────────────────────────────
@@ -152,6 +154,10 @@ class JobService:
         if company_name:
             filters.append("c.company_name ILIKE :company_name")
             params["company_name"] = f"%{company_name}%"
+
+        if category:
+            filters.append("j.job_category = :category")
+            params["category"] = category
 
         where_clause = " AND ".join(filters)
 
@@ -181,6 +187,7 @@ class JobService:
                 j.salary_max,
                 j.location,
                 j.remote_type,
+                j.job_category,
                 j.status,
                 j.posted_by,
                 j.created_at,
@@ -224,6 +231,7 @@ class JobService:
                     salary_max=row["salary_max"],
                     location=row["location"],
                     remote_type=row["remote_type"],
+                    job_category=row["job_category"],
                     status=row["status"],
                     posted_by=row["posted_by"],
                     created_at=row["created_at"],
@@ -320,7 +328,7 @@ class JobService:
 
     # ─── Featured Jobs ────────────────────────────────────────────────────────
 
-    async def get_featured_jobs(self, limit: int = 10) -> FeaturedJobListResponse:
+    async def get_featured_jobs(self, limit: int = 10, category: str | None = None) -> FeaturedJobListResponse:
         """
         Return top featured jobs ranked by popularity score:
         score = (view_count * 1) + (application_count * 3) + recency_bonus
@@ -329,7 +337,13 @@ class JobService:
         Only OPEN jobs are included.
         """
 
-        data_sql = text("""
+        category_filter = ""
+        params: dict = {"limit": limit}
+        if category:
+            category_filter = "AND j.job_category = :category"
+            params["category"] = category
+
+        data_sql = text(f"""
             SELECT
                 j.id,
                 j.company_id,
@@ -341,6 +355,7 @@ class JobService:
                 j.salary_max,
                 j.location,
                 j.remote_type,
+                j.job_category,
                 j.status,
                 j.posted_by,
                 j.created_at,
@@ -349,7 +364,6 @@ class JobService:
                 c.logo_url AS company_logo,
                 COALESCE(v.view_count, 0)::int          AS view_count,
                 COALESCE(a.application_count, 0)::int   AS application_count,
-                -- popularity score: views + 3x applications + recency bonus (max 30 days)
                 (
                     COALESCE(v.view_count, 0) * 1
                     + COALESCE(a.application_count, 0) * 3
@@ -378,13 +392,13 @@ class JobService:
                 GROUP BY job_id
             ) a ON a.job_id = j.id
             LEFT JOIN public.job_skills js ON js.job_id = j.id
-            WHERE j.status = 'OPEN'
+            WHERE j.status = 'OPEN' {category_filter}
             GROUP BY j.id, c.company_name, c.logo_url, v.view_count, a.application_count
             ORDER BY popularity_score DESC, j.created_at DESC
             LIMIT :limit
         """)
 
-        rows = (await self.db.execute(data_sql, {"limit": limit})).mappings().all()
+        rows = (await self.db.execute(data_sql, params)).mappings().all()
 
         items: list[FeaturedJobResponse] = []
         for row in rows:
@@ -401,6 +415,7 @@ class JobService:
                     salary_max=row["salary_max"],
                     location=row["location"],
                     remote_type=row["remote_type"],
+                    job_category=row["job_category"],
                     status=row["status"],
                     posted_by=row["posted_by"],
                     created_at=row["created_at"],

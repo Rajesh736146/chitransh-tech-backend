@@ -29,6 +29,7 @@ class Job(Base):
     salary_max: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     remote_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    job_category: Mapped[str] = mapped_column(String(50), server_default="white_collar", index=True)
     status: Mapped[str] = mapped_column(String(50), server_default="OPEN")
     posted_by: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("public.users.id"), nullable=False

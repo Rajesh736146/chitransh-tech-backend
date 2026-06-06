@@ -1,7 +1,7 @@
 """Profile routes — view, edit profile, social interactions (follow, endorse, share)."""
 
 import uuid
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_current_user
@@ -10,6 +10,7 @@ from app.modules.profile.profile_service import ProfileService
 from app.modules.profile.profile_schema import (
     ProfileUpdateRequest,
     ProfileOut,
+    ProfileSearchResponse,
     SkillCreateRequest,
     SkillOut,
     EducationCreateRequest,
@@ -27,6 +28,36 @@ router = APIRouter(prefix="/profile", tags=["profile"])
 
 def get_profile_service(db: AsyncSession = Depends(get_db)) -> ProfileService:
     return ProfileService(db)
+
+
+# ─── Search Profiles ──────────────────────────────────────────────────────────
+
+@router.get(
+    "/search",
+    response_model=ProfileSearchResponse,
+    summary="Search user profiles by location, skill, job profile, bio keywords",
+)
+async def search_profiles(
+    location: str | None = Query(None, description="Filter by location (partial match)"),
+    skill: str | None = Query(None, description="Filter by skill name (partial match)"),
+    job_profile: str | None = Query(None, description="Filter by current position / headline (partial match)"),
+    keyword: str | None = Query(None, description="Search in bio, headline, full_name"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    service: ProfileService = Depends(get_profile_service),
+):
+    """
+    Search and list user profiles with optional filters.
+    All filters are optional and combined with AND logic.
+    """
+    return await service.search_profiles(
+        location=location,
+        skill=skill,
+        job_profile=job_profile,
+        keyword=keyword,
+        page=page,
+        page_size=page_size,
+    )
 
 
 # ─── My Profile ───────────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ class FeedPost(Base):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     visibility: Mapped[str] = mapped_column(String(50), server_default="PUBLIC")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

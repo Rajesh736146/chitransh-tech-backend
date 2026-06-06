@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Job Apply with R2 Direct Upload</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+        label { display: block; margin-top: 16px; font-weight: bold; }
+        input, button { margin-top: 6px; padding: 8px 12px; font-size: 14px; }
+        input[type="text"] { width: 100%; box-sizing: border-box; }
+        button { cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 4px; }
+        button:disabled { background: #94a3b8; }
+        #log { margin-top: 24px; padding: 12px; background: #f1f5f9; border-radius: 6px; font-size: 13px; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h2>Test: Apply to Job with Direct R2 Upload</h2>
+
+    <label>API Base URL</label>
+    <input type="text" id="baseUrl" value="http://localhost:8000/api/v1" />
+
+    <label>Auth Token (Bearer)</label>
+    <input type="text" id="token" value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiMzdmYWU2NC1lNDI0LTRiMzgtYThiYi1lYmZiNTg3MjJlOTIiLCJleHAiOjE3ODEyOTAwNTR9.lsv50piB2Cyo4dQJk12Md97vS8XGkO6XMfc0RrQOJhM" />
+
+    <label>Job ID</label>
+    <input type="text" id="jobId" placeholder="paste a job UUID here" />
+
+    <label>Resume File (PDF, DOC, DOCX)</label>
+    <input type="file" id="resumeFile" accept=".pdf,.doc,.docx" />
+
+    <button id="applyBtn" onclick="applyToJob()">Apply to Job</button>
+
+    <div id="log"></div>
+
+    <script>
+        function log(msg) {
+            const el = document.getElementById('log');
+            el.textContent += msg + '\n';
+            el.scrollTop = el.scrollHeight;
+        }
+
+        async function applyToJob() {
+            const baseUrl = document.getElementById('baseUrl').value.replace(/\/$/, '');
+            const token = document.getElementById('token').value;
+            const jobId = document.getElementById('jobId').value.trim();
+            const fileInput = document.getElementById('resumeFile');
+            const file = fileInput.files[0];
+
+            if (!jobId) { alert('Enter a Job ID'); return; }
+            if (!file) { alert('Select a resume file'); return; }
+
+            const btn = document.getElementById('applyBtn');
+            btn.disabled = true;
+            document.getElementById('log').textContent = '';
+
+            const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+            try {
+                // Step 1: Get presigned upload URL
+                log('Step 1: Getting presigned upload URL...');
+                const presignRes = await fetch(`${baseUrl}/jobs/${jobId}/apply/presigned-url`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ filename: file.name, content_type: file.type }),
+                });
+                const presignData = await presignRes.json();
+                if (!presignRes.ok) { log('❌ Failed: ' + JSON.stringify(presignData)); return; }
+                log('✅ Got presigned URL');
+                log('   object_key: ' + presignData.object_key);
+
+                // Step 2: Upload file directly to R2
+                log('\nStep 2: Uploading file directly to R2...');
+                const uploadRes = await fetch(presignData.upload_url, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': file.type },
+                    body: file,
+                });
+                if (!uploadRes.ok) { log('❌ R2 upload failed: ' + uploadRes.status); return; }
+                log('✅ File uploaded to R2');
+
+                // Step 3: Apply with the object key
+                log('\nStep 3: Submitting application...');
+                const applyRes = await fetch(`${baseUrl}/jobs/${jobId}/apply`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ resume_key: presignData.object_key }),
+                });
+                const applyData = await applyRes.json();
+                if (!applyRes.ok) { log('❌ Apply failed: ' + JSON.stringify(applyData)); return; }
+                log('✅ Application submitted!');
+                log('\nResponse:\n' + JSON.stringify(applyData, null, 2));
+
+            } catch (err) {
+                log('❌ Error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>

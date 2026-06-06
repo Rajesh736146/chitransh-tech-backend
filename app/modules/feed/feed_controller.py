@@ -41,25 +41,12 @@ def get_feed_service(db: AsyncSession = Depends(get_db)) -> FeedService:
 async def list_feed(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
+    category: str | None = Query(None, description="Filter by category: blue_collar or white_collar"),
     db: AsyncSession = Depends(get_db),
 ):
     """Public endpoint — no auth required. Pass token to get is_liked state."""
     service = FeedService(db)
-    return await service.list_feed(page=page, page_size=page_size)
-
-
-@router.post(
-    "/",
-    response_model=FeedPostOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a post",
-)
-async def create_post(
-    payload: CreatePostRequest,
-    current_user: User = Depends(get_current_user),
-    service: FeedService = Depends(get_feed_service),
-):
-    return await service.create_post(payload, current_user)
+    return await service.list_feed(page=page, page_size=page_size, category=category)
 
 
 @router.post(
@@ -72,39 +59,43 @@ async def create_post_with_media(
     content: str = Form(..., min_length=1),
     title: str | None = Form(None),
     external_link: str | None = Form(None),
+    category: str | None = Form(None, description="blue_collar or white_collar"),
     visibility: str = Form("PUBLIC"),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
     current_user: User = Depends(get_current_user),
     service: FeedService = Depends(get_feed_service),
 ):
     """
-    Create a post with an attached file (image, video, or PDF).
+    Create a post with an optional attached file (image, video, or PDF).
     The file is uploaded to Cloudflare R2 and the URL is stored as media_url.
     """
-    if file.content_type not in ALLOWED_MEDIA_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file type '{file.content_type}'. Allowed: {', '.join(sorted(ALLOWED_MEDIA_TYPES))}",
-        )
+    media_url = None
 
-    # Check file size
-    file_content = await file.read()
-    if len(file_content) > MAX_MEDIA_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File size must be under 20 MB",
-        )
-    await file.seek(0)
+    if file and file.filename:
+        if file.content_type not in ALLOWED_MEDIA_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type '{file.content_type}'. Allowed: {', '.join(sorted(ALLOWED_MEDIA_TYPES))}",
+            )
 
-    # Upload to R2
-    r2 = R2StorageService()
-    key = r2.upload_file(
-        file=file.file,
-        filename=file.filename or "media",
-        folder="feed-media",
-        content_type=file.content_type,
-    )
-    media_url = r2.generate_presigned_url(key, expires_in=30 * 24 * 3600)  # 30-day URL
+        # Check file size
+        file_content = await file.read()
+        if len(file_content) > MAX_MEDIA_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File size must be under 20 MB",
+            )
+        await file.seek(0)
+
+        # Upload to R2
+        r2 = R2StorageService()
+        key = r2.upload_file(
+            file=file.file,
+            filename=file.filename or "media",
+            folder="feed-media",
+            content_type=file.content_type,
+        )
+        media_url = r2.generate_presigned_url(key, expires_in=30 * 24 * 3600)  # 30-day URL
 
     # Create the post with media_url
     payload = CreatePostRequest(
@@ -112,6 +103,7 @@ async def create_post_with_media(
         title=title,
         media_url=media_url,
         external_link=external_link,
+        category=category,
         visibility=visibility,
     )
     return await service.create_post(payload, current_user)

@@ -41,6 +41,7 @@ class FeedService:
             content=payload.content,
             media_url=payload.media_url,
             external_link=payload.external_link,
+            category=payload.category,
             visibility=payload.visibility,
         )
         self.db.add(post)
@@ -64,6 +65,7 @@ class FeedService:
         salary_min: float | None,
         salary_max: float | None,
         posted_by: uuid.UUID,
+        job_category: str = "white_collar",
     ) -> None:
         salary_str = ""
         if salary_min and salary_max:
@@ -86,6 +88,7 @@ class FeedService:
             title=job_title,
             content="\n".join(content_parts),
             external_link=f"/jobs/{job_id}",
+            category=job_category,
             visibility="PUBLIC",
         )
         self.db.add(post)
@@ -98,47 +101,87 @@ class FeedService:
         page: int = 1,
         page_size: int = 20,
         current_user: User | None = None,
+        category: str | None = None,
     ) -> FeedListResponse:
         offset = (page - 1) * page_size
         user_id_str = str(current_user.id) if current_user else None
 
-        count_result = await self.db.execute(
-            text("SELECT COUNT(*) FROM public.feed_posts WHERE visibility = 'PUBLIC'")
-        )
-        total: int = count_result.scalar_one()
+        category_filter = ""
+        params: dict = {"user_id": user_id_str, "limit": page_size, "offset": offset}
+        if category:
+            category_filter = "AND (category = :category OR category IS NULL)"
+            params["category"] = category
 
-        data_sql = text("""
-            SELECT
-                fp.id,
-                fp.author_id,
-                fp.post_type,
-                fp.title,
-                fp.content,
-                fp.media_url,
-                fp.external_link,
-                fp.visibility,
-                fp.created_at,
-                u.full_name                                    AS author_name,
-                u.email                                        AS author_email,
-                COUNT(DISTINCT fr.id)                          AS like_count,
-                COUNT(DISTINCT fc.id)                          AS comment_count,
-                BOOL_OR(fr.user_id = :user_id)                 AS is_liked
-            FROM   public.feed_posts    fp
-            LEFT JOIN public.users          u  ON u.id  = fp.author_id
-            LEFT JOIN public.feed_reactions fr ON fr.post_id = fp.id
-            LEFT JOIN public.feed_comments  fc ON fc.post_id = fp.id
-            WHERE  fp.visibility = 'PUBLIC'
-            GROUP  BY fp.id, u.full_name, u.email
-            ORDER  BY fp.created_at DESC
-            LIMIT  :limit
-            OFFSET :offset
+        # Count: regular feed posts + group posts
+        count_sql = text(f"""
+            SELECT COUNT(*) FROM (
+                SELECT id FROM public.feed_posts WHERE visibility = 'PUBLIC' {category_filter}
+                UNION ALL
+                SELECT gp.id FROM public.group_posts gp
+                JOIN public.groups g ON g.id = gp.group_id
+                WHERE 1=1 {category_filter.replace('category', 'g.category')}
+            ) combined
+        """)
+        total: int = (await self.db.execute(count_sql, params)).scalar_one()
+
+        # Combined feed: regular posts + group posts, ordered by created_at
+        data_sql = text(f"""
+            SELECT * FROM (
+                SELECT
+                    fp.id,
+                    fp.author_id,
+                    fp.post_type,
+                    fp.title,
+                    fp.content,
+                    fp.media_url,
+                    fp.external_link,
+                    fp.category,
+                    fp.visibility,
+                    fp.created_at,
+                    u.full_name AS author_name,
+                    u.email AS author_email,
+                    COUNT(DISTINCT fr.id) AS like_count,
+                    COUNT(DISTINCT fc.id) AS comment_count,
+                    BOOL_OR(fr.user_id = :user_id) AS is_liked
+                FROM public.feed_posts fp
+                LEFT JOIN public.users u ON u.id = fp.author_id
+                LEFT JOIN public.feed_reactions fr ON fr.post_id = fp.id
+                LEFT JOIN public.feed_comments fc ON fc.post_id = fp.id
+                WHERE fp.visibility = 'PUBLIC' {category_filter}
+                GROUP BY fp.id, u.full_name, u.email
+
+                UNION ALL
+
+                SELECT
+                    gp.id,
+                    gp.author_id,
+                    'GROUP_POST' AS post_type,
+                    gp.title,
+                    gp.content,
+                    gp.media_url,
+                    NULL AS external_link,
+                    g.category,
+                    'PUBLIC' AS visibility,
+                    gp.created_at,
+                    u.full_name AS author_name,
+                    u.email AS author_email,
+                    COUNT(DISTINCT gr.id) AS like_count,
+                    COUNT(DISTINCT gc.id) AS comment_count,
+                    BOOL_OR(gr.user_id = :user_id) AS is_liked
+                FROM public.group_posts gp
+                JOIN public.groups g ON g.id = gp.group_id
+                JOIN public.users u ON u.id = gp.author_id
+                LEFT JOIN public.group_post_reactions gr ON gr.post_id = gp.id
+                LEFT JOIN public.group_post_comments gc ON gc.post_id = gp.id
+                WHERE 1=1 {category_filter.replace('category', 'g.category')}
+                GROUP BY gp.id, g.category, u.full_name, u.email
+            ) combined
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
         """)
 
         rows = (
-            await self.db.execute(
-                data_sql,
-                {"user_id": user_id_str, "limit": page_size, "offset": offset},
-            )
+            await self.db.execute(data_sql, params)
         ).mappings().all()
 
         items = [
@@ -150,6 +193,7 @@ class FeedService:
                 content=r["content"],
                 media_url=r["media_url"],
                 external_link=r["external_link"],
+                category=r["category"],
                 visibility=r["visibility"],
                 created_at=r["created_at"],
                 author_name=r["author_name"],

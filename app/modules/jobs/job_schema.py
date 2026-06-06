@@ -45,6 +45,7 @@ class JobCreateRequest(BaseModel):
     salary_max: Decimal | None = None
     location: str | None = None
     remote_type: Literal["Remote", "Hybrid", "On-site"] | None = None
+    job_category: Literal["blue_collar", "white_collar"] = "white_collar"
     skills: list[SkillIn] = []
 
     @field_validator("skills", mode="before")
@@ -65,6 +66,7 @@ class JobUpdateRequest(BaseModel):
     salary_max: Decimal | None = None
     location: str | None = None
     remote_type: Literal["Remote", "Hybrid", "On-site"] | None = None
+    job_category: Literal["blue_collar", "white_collar"] | None = None
     status: Literal["OPEN", "CLOSED", "PAUSED"] | None = None
     skills: list[SkillIn] | None = None
 
@@ -91,6 +93,7 @@ class JobResponse(BaseModel):
     salary_max: Decimal | None
     location: str | None
     remote_type: str | None
+    job_category: str = "white_collar"
     status: str
     posted_by: uuid.UUID
     created_at: datetime
@@ -120,6 +123,7 @@ class FeaturedJobResponse(BaseModel):
     salary_max: Decimal | None
     location: str | None
     remote_type: str | None
+    job_category: str = "white_collar"
     status: str
     posted_by: uuid.UUID
     created_at: datetime

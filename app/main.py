@@ -12,11 +12,55 @@ from app.modules.feed.feed_controller import router as feed_router
 from app.modules.upload.upload_controller import router as upload_router
 from app.modules.profile.profile_controller import router as profile_router
 from app.modules.admin.admin_controller import router as admin_router
+from app.modules.groups.group_controller import router as groups_router
 settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import logging
+
+    logger = logging.getLogger("app.startup")
+    logging.basicConfig(level=logging.INFO)
+
+    print("\n" + "=" * 50)
+    print("🚀  STARTUP CONNECTION CHECKS")
+    print("=" * 50)
+
+    # ── Database (PostgreSQL) ─────────────────────────────────────────────────
+    try:
+        from app.db.session import engine
+        from sqlalchemy import text
+
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        print("✅  Database (PostgreSQL) : CONNECTED")
+    except Exception as e:
+        print(f"❌  Database (PostgreSQL) : FAILED — {e}")
+
+    # ── Redis (Upstash) ───────────────────────────────────────────────────────
+    try:
+        from app.services.redis_service import RedisService
+
+        redis_svc = RedisService()
+        if redis_svc.ping():
+            print("✅  Redis                : CONNECTED")
+        else:
+            print("❌  Redis                : FAILED — ping returned False")
+    except Exception as e:
+        print(f"❌  Redis                : FAILED — {e}")
+
+    # ── Cloudflare R2 ─────────────────────────────────────────────────────────
+    try:
+        from app.services.r2_storage_service import get_s3_client
+
+        s3 = get_s3_client()
+        s3.head_bucket(Bucket=settings.r2_bucket_name)
+        print("✅  Cloudflare R2        : CONNECTED")
+    except Exception as e:
+        print(f"❌  Cloudflare R2        : FAILED — {e}")
+
+    
     yield
 
 
@@ -53,6 +97,7 @@ app.include_router(feed_router, prefix="/api/v1")
 app.include_router(upload_router, prefix="/api/v1")
 app.include_router(profile_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+app.include_router(groups_router, prefix="/api/v1")
 
 
 @app.get("/health")

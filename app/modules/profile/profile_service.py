@@ -19,6 +19,8 @@ from app.modules.profile.model import (
 from app.modules.profile.profile_schema import (
     ProfileUpdateRequest,
     ProfileOut,
+    ProfileSearchItem,
+    ProfileSearchResponse,
     SkillCreateRequest,
     SkillOut,
     EducationCreateRequest,
@@ -111,6 +113,22 @@ class ProfileService:
     ) -> ProfileOut:
         """Update or create the current user's profile."""
 
+        # Update User-level fields (full_name, phone, profile_image)
+        user_fields = {"full_name", "phone", "profile_image"}
+        update_data = payload.model_dump(exclude_unset=True)
+
+        user_updates = {k: update_data.pop(k) for k in list(update_data.keys()) if k in user_fields}
+        if user_updates:
+            # Re-fetch user within this session to ensure it's tracked
+            from sqlalchemy import update as sa_update
+            await self.db.execute(
+                sa_update(User)
+                .where(User.id == current_user.id)
+                .values(**user_updates)
+            )
+            await self.db.flush()
+
+        # Update UserProfile-level fields
         profile = (
             await self.db.execute(
                 select(UserProfile).where(UserProfile.user_id == current_user.id)
@@ -122,7 +140,6 @@ class ProfileService:
             self.db.add(profile)
             await self.db.flush()
 
-        update_data = payload.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(profile, field, value)
 
@@ -130,6 +147,116 @@ class ProfileService:
         await self.db.refresh(profile)
 
         return await self.get_profile(current_user.id, current_user)
+
+    # ─── Search Profiles ──────────────────────────────────────────────────────
+
+    async def search_profiles(
+        self,
+        location: str | None = None,
+        skill: str | None = None,
+        job_profile: str | None = None,
+        keyword: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> ProfileSearchResponse:
+        """Search user profiles with optional filters."""
+
+        conditions = []
+        params: dict = {}
+
+        if location:
+            conditions.append("LOWER(p.location) LIKE :location")
+            params["location"] = f"%{location.lower()}%"
+
+        if skill:
+            conditions.append("""
+                EXISTS (
+                    SELECT 1 FROM public.user_skills us
+                    WHERE us.user_id = u.id AND LOWER(us.skill_name) LIKE :skill
+                )
+            """)
+            params["skill"] = f"%{skill.lower()}%"
+
+        if job_profile:
+            conditions.append("""
+                (LOWER(p.current_position) LIKE :job_profile
+                 OR LOWER(p.headline) LIKE :job_profile)
+            """)
+            params["job_profile"] = f"%{job_profile.lower()}%"
+
+        if keyword:
+            conditions.append("""
+                (LOWER(u.full_name) LIKE :keyword
+                 OR LOWER(p.headline) LIKE :keyword
+                 OR LOWER(p.bio) LIKE :keyword)
+            """)
+            params["keyword"] = f"%{keyword.lower()}%"
+
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+        offset = (page - 1) * page_size
+
+        # Count query
+        count_sql = text(f"""
+            SELECT COUNT(DISTINCT u.id)
+            FROM public.users u
+            LEFT JOIN public.user_profiles p ON p.user_id = u.id
+            {where_clause}
+        """)
+        total = (await self.db.execute(count_sql, params)).scalar() or 0
+
+        # Data query
+        data_sql = text(f"""
+            SELECT
+                u.id AS user_id,
+                u.full_name,
+                u.email,
+                u.profile_image,
+                p.headline,
+                p.bio,
+                p.current_company,
+                p.current_position,
+                p.experience_years,
+                p.location,
+                COALESCE(
+                    (SELECT array_agg(us.skill_name)
+                     FROM public.user_skills us
+                     WHERE us.user_id = u.id),
+                    ARRAY[]::text[]
+                ) AS skills
+            FROM public.users u
+            LEFT JOIN public.user_profiles p ON p.user_id = u.id
+            {where_clause}
+            ORDER BY u.full_name
+            LIMIT :limit OFFSET :offset
+        """)
+        params["limit"] = page_size
+        params["offset"] = offset
+
+        rows = (await self.db.execute(data_sql, params)).mappings().all()
+
+        items = [
+            ProfileSearchItem(
+                user_id=r["user_id"],
+                full_name=r["full_name"],
+                email=r["email"],
+                profile_image=r["profile_image"],
+                headline=r["headline"],
+                bio=r["bio"],
+                current_company=r["current_company"],
+                current_position=r["current_position"],
+                experience_years=r["experience_years"],
+                location=r["location"],
+                skills=list(r["skills"]) if r["skills"] else [],
+            )
+            for r in rows
+        ]
+
+        return ProfileSearchResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=items,
+        )
 
     # ─── Skills ───────────────────────────────────────────────────────────────
 

@@ -1,7 +1,9 @@
 """Job routes — post, list, update, delete jobs (employer-only write ops)."""
 
 import uuid
-from fastapi import APIRouter, Depends, Query, File, UploadFile, HTTPException, status
+from datetime import datetime
+from fastapi import APIRouter, Depends, Query, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_current_user
@@ -18,16 +20,19 @@ from app.modules.jobs.job_schema import (
     CompanyCreateRequest,
     CompanyResponse,
 )
-from app.services.r2_storage_service import R2StorageService
+from app.services.r2_storage_service import R2StorageService, get_s3_client
+from app.core.config import get_settings
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-ALLOWED_RESUME_TYPES = {
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+settings = get_settings()
+
+ALLOWED_RESUME_EXTENSIONS = {"pdf", "doc", "docx"}
+ALLOWED_CONTENT_TYPES = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
-MAX_RESUME_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def get_job_service(db: AsyncSession = Depends(get_db)) -> JobService:
@@ -70,6 +75,7 @@ async def list_companies(
 )
 async def get_featured_jobs(
     limit: int = Query(10, ge=1, le=50, description="Number of featured jobs to return"),
+    category: str | None = Query(None, description="Filter by job category: blue_collar or white_collar"),
     service: JobService = Depends(get_job_service),
 ):
     """
@@ -77,7 +83,7 @@ async def get_featured_jobs(
     Score is based on view count, application count, and recency.
     No authentication required.
     """
-    return await service.get_featured_jobs(limit=limit)
+    return await service.get_featured_jobs(limit=limit, category=category)
 
 
 @router.post(
@@ -107,6 +113,7 @@ async def list_jobs(
     employment_type: str | None = Query(None, description="e.g. Full-time, Part-time, Contract, Internship, Freelance"),
     remote_type: str | None = Query(None, description="e.g. Remote, Hybrid, On-site"),
     company_name: str | None = Query(None, description="Filter by company name (partial match)"),
+    category: str | None = Query(None, description="Filter by job category: blue_collar or white_collar"),
     service: JobService = Depends(get_job_service),
 ):
     return await service.list_jobs(
@@ -117,6 +124,7 @@ async def list_jobs(
         employment_type=employment_type,
         remote_type=remote_type,
         company_name=company_name,
+        category=category,
     )
 
 
@@ -148,79 +156,107 @@ async def get_my_applications(
     return await service.get_my_applications(current_user, page=page, page_size=page_size)
 
 
+# ─── Presigned URL for direct R2 upload ───────────────────────────────────────
+
+class PresignedUrlRequest(BaseModel):
+    filename: str
+    content_type: str
+
+
+class PresignedUrlResponse(BaseModel):
+    upload_url: str
+    object_key: str
+
+
+@router.post(
+    "/{job_id}/apply/presigned-url",
+    response_model=PresignedUrlResponse,
+    summary="Get a presigned URL to upload resume directly to R2",
+)
+async def get_resume_upload_url(
+    job_id: uuid.UUID,
+    body: PresignedUrlRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns a presigned PUT URL so the frontend can upload the resume
+    directly to Cloudflare R2 without passing through the backend.
+
+    Flow:
+    1. Call this endpoint with filename & content_type
+    2. PUT the file to the returned upload_url
+    3. Call POST /{job_id}/apply with the returned object_key
+    """
+    ext = body.filename.rsplit(".", 1)[-1].lower() if "." in body.filename else ""
+    if ext not in ALLOWED_RESUME_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_RESUME_EXTENSIONS)}",
+        )
+
+    # Generate a unique object key
+    unique_name = f"{uuid.uuid4().hex}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.{ext}"
+    object_key = f"resumes/{unique_name}"
+
+    # Generate presigned PUT URL
+    s3 = get_s3_client()
+    upload_url = s3.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": settings.r2_bucket_name,
+            "Key": object_key,
+            "ContentType": body.content_type,
+        },
+        ExpiresIn=600,  # 10 minutes to upload
+    )
+
+    return PresignedUrlResponse(upload_url=upload_url, object_key=object_key)
+
+
+# ─── Apply to job ─────────────────────────────────────────────────────────────
+
+class ApplyRequest(BaseModel):
+    resume_key: str
+
+
 @router.post(
     "/{job_id}/apply",
     response_model=JobApplicationResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Apply to a job with resume upload",
+    summary="Apply to a job (after uploading resume to R2)",
 )
 async def apply_to_job(
     job_id: uuid.UUID,
-    resume: UploadFile = File(None, description="Resume file (PDF, DOC, DOCX) — optional if resume_url provided"),
+    body: ApplyRequest,
     current_user: User = Depends(get_current_user),
     service: JobService = Depends(get_job_service),
 ):
     """
-    Apply to a job by uploading your resume.
-    Accepts PDF, DOC, or DOCX files up to 10 MB.
+    Apply to a job after uploading the resume directly to R2.
+
+    Flow:
+    1. GET presigned URL from /{job_id}/apply/presigned-url
+    2. PUT file to R2 using that URL
+    3. Call this endpoint with the object_key returned in step 1
     """
-    resume_url = None
-
-    if resume and resume.filename:
-        if resume.content_type not in ALLOWED_RESUME_TYPES:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid resume format. Allowed: PDF, DOC, DOCX",
-            )
-
-        content = await resume.read()
-        if len(content) > MAX_RESUME_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Resume file must be under 10 MB",
-            )
-        await resume.seek(0)
-
-        # Upload resume to R2
-        r2 = R2StorageService()
-        key = r2.upload_file(
-            file=resume.file,
-            filename=resume.filename or "resume.pdf",
-            folder="resumes",
-            content_type=resume.content_type,
+    # Verify the object exists in R2
+    try:
+        s3 = get_s3_client()
+        s3.head_object(Bucket=settings.r2_bucket_name, Key=body.resume_key)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Resume not found in storage. Please upload first using the presigned URL.",
         )
-        resume_url = r2.generate_presigned_url(key, expires_in=90 * 24 * 3600)
+
+    # Generate a long-lived read URL for the resume
+    r2 = R2StorageService()
+    resume_url = r2.generate_presigned_url(body.resume_key, expires_in=90 * 24 * 3600)
 
     return await service.apply_to_job(
         job_id=job_id,
         current_user=current_user,
-        resume_url=resume_url or "pending",
-    )
-
-
-from pydantic import BaseModel as _BaseModel
-
-class _ApplyWithUrlBody(_BaseModel):
-    resume_url: str
-
-
-@router.post(
-    "/{job_id}/apply-with-url",
-    response_model=JobApplicationResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Apply to a job with a pre-uploaded resume URL",
-)
-async def apply_to_job_with_url(
-    job_id: uuid.UUID,
-    body: _ApplyWithUrlBody,
-    current_user: User = Depends(get_current_user),
-    service: JobService = Depends(get_job_service),
-):
-    """Apply to a job using a resume URL obtained from /upload/document."""
-    return await service.apply_to_job(
-        job_id=job_id,
-        current_user=current_user,
-        resume_url=body.resume_url,
+        resume_url=resume_url,
     )
 
 

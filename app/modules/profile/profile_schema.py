@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 # ─── Profile ─────────────────────────────────────────────────────────────────
 
 class ProfileUpdateRequest(BaseModel):
+    full_name: str | None = None
+    phone: str | None = None
+    profile_image: str | None = None
     headline: str | None = None
     bio: str | None = None
     current_company: str | None = None
@@ -43,6 +46,29 @@ class ProfileOut(BaseModel):
     following_count: int = 0
     is_following: bool = False
     profile_view_count: int = 0
+
+
+class ProfileSearchItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    profile_image: str | None = None
+    headline: str | None = None
+    bio: str | None = None
+    current_company: str | None = None
+    current_position: str | None = None
+    experience_years: Decimal | None = None
+    location: str | None = None
+    skills: list[str] = []
+
+
+class ProfileSearchResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ProfileSearchItem]
 
 
 # ─── Skills ──────────────────────────────────────────────────────────────────
