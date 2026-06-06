@@ -13,6 +13,7 @@ from app.modules.upload.upload_controller import router as upload_router
 from app.modules.profile.profile_controller import router as profile_router
 from app.modules.admin.admin_controller import router as admin_router
 from app.modules.groups.group_controller import router as groups_router
+from app.modules.forum.forum_controller import router as forum_router
 settings = get_settings()
 
 
@@ -98,6 +99,7 @@ app.include_router(upload_router, prefix="/api/v1")
 app.include_router(profile_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(groups_router, prefix="/api/v1")
+app.include_router(forum_router, prefix="/api/v1")
 
 
 @app.get("/health")
